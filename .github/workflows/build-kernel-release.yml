@@ -454,18 +454,26 @@ jobs:
             head_ver="${susfs_versions_per_key[$key]:-unknown}"
             if [ "$head_ver" != "unknown" ] && [ "$(printf '%s\n%s\n' "$head_ver" "$SUSFS_MAX_SUPPORTED" | sort -V | tail -n1)" != "$SUSFS_MAX_SUPPORTED" ]; then
               echo "::warning::$key: latest SUSFS ($head_ver) is newer than supported ($SUSFS_MAX_SUPPORTED). Looking for the newest supported release tag..."
-              tags_json=$(curl -s --fail "https://gitlab.com/api/v4/projects/${GITLAB_PROJECT_ID}/repository/tags?per_page=100" || true)
               picked=""
-              while read -r tag_name tag_sha; do
-                [ -n "$tag_name" ] || continue
+              # Tags via git (same method the build action used before), newest first
+              mapfile -t cand_tags < <(git ls-remote --tags "$SUSFS_REPO" 2>/dev/null \
+                | awk '{print $2}' | sed 's#^refs/tags/##; s#\^{}$##' \
+                | grep -E '^v[0-9]+[.][0-9]+[.][0-9]+$' | sort -V -r | uniq)
+              echo "  ℹ️  Tags found: ${cand_tags[*]:-none}"
+              for tag_name in "${cand_tags[@]}"; do
                 # keep only tags <= SUSFS_MAX_SUPPORTED
                 [ "$(printf '%s\n%s\n' "$tag_name" "$SUSFS_MAX_SUPPORTED" | sort -V | tail -n1)" = "$SUSFS_MAX_SUPPORTED" ] || continue
-                # the tag must contain the patch for this kernel
-                if curl -s --fail -o /dev/null "https://gitlab.com/api/v4/projects/${GITLAB_PROJECT_ID}/repository/files/kernel_patches%2F50_add_susfs_in_gki-${key}.patch?ref=${tag_sha}"; then
+                # resolve tag commit and make sure it ships the patch for this kernel (GraphQL, same API as above)
+                TAG_QUERY="{ project(fullPath: \"${GITLAB_PROJECT_PATH}\") { repository { ch: commit(ref: \"${tag_name}\") { sha } blobs(paths: [\"kernel_patches/50_add_susfs_in_gki-${key}.patch\"], ref: \"${tag_name}\") { nodes { path } } } } }"
+                TAG_RESP=$(curl -s --fail -G "https://gitlab.com/api/graphql" --data-urlencode "query=$TAG_QUERY" || true)
+                tag_sha=$(echo "$TAG_RESP" | jq -r '.data.project.repository.ch.sha // empty' 2>/dev/null || true)
+                tag_has_patch=$(echo "$TAG_RESP" | jq -r '.data.project.repository.blobs.nodes | length' 2>/dev/null || echo 0)
+                echo "  ℹ️  $tag_name → commit=${tag_sha:-?} patch_files=${tag_has_patch:-0}"
+                if [ -n "$tag_sha" ] && [ "${tag_has_patch:-0}" -gt 0 ]; then
                   picked="$tag_name $tag_sha"
                   break
                 fi
-              done < <(echo "$tags_json" | jq -r '.[]? | select(.name | test("^v[0-9]+[.][0-9]+[.][0-9]+$")) | "\(.name) \(.commit.id)"' | sort -V -r)
+              done
               
               if [ -n "$picked" ]; then
                 resolved="${picked#* }"
