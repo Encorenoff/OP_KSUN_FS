@@ -1064,7 +1064,20 @@ runs:
         else
           echo "Adding KernelSU Next (Legacy Built-in)..."
           KSU_INPUT="${{ inputs.ksu_branch_or_hash }}"
-          if [ -z "$KSU_INPUT" ]; then
+          if [ "${OP_SUSFS:-false}" = "true" ]; then
+            # pershoot/KernelSU-Next@dev-susfs = upstream dev + native SUSFS integration, so
+            # 10_enable_susfs_for_ksu.patch and the WildKernels fix patches are NOT needed.
+            # Same wiring as KernelSU-Next setup.sh, but without its "latest tag" logic.
+            echo "Using pershoot/KernelSU-Next (dev-susfs) with native SUSFS integration"
+            rm -rf KernelSU-Next
+            git clone --filter=blob:none -b dev-susfs https://github.com/pershoot/KernelSU-Next.git KernelSU-Next
+            DRIVER_DIR="$PWD/common/drivers"
+            [ -d "$DRIVER_DIR" ] || DRIVER_DIR="$PWD/drivers"
+            ln -sfn "$(realpath --relative-to="$DRIVER_DIR" "$PWD/KernelSU-Next/kernel")" "$DRIVER_DIR/kernelsu"
+            grep -q "kernelsu" "$DRIVER_DIR/Makefile" || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "$DRIVER_DIR/Makefile"
+            grep -q 'drivers/kernelsu/Kconfig' "$DRIVER_DIR/Kconfig" || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' "$DRIVER_DIR/Kconfig"
+            [ -f "$DRIVER_DIR/kernelsu/Kbuild" ] || { echo "::error::drivers/kernelsu symlink is broken"; exit 1; }
+          elif [ -z "$KSU_INPUT" ]; then
             curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
           else
             curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "$KSU_INPUT"
@@ -1228,7 +1241,13 @@ runs:
           echo "NEED_HOOKS=false" >> $GITHUB_ENV
         fi
         
-        if [ "${KSUMODE:-lkm}" != "lkm" ]; then
+        if [ "${KSUMODE:-lkm}" != "lkm" ] && [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
+          echo "ℹ️ KernelSU-Next (pershoot dev-susfs) has native SUSFS integration: no 10_enable_susfs_for_ksu / fix patches needed."
+          case "$susfs_version" in
+            v2.3.*) echo "✅ SuSFS $susfs_version" ;;
+            *) echo "::warning::Kernel SuSFS is $susfs_version, KernelSU-Next (pershoot dev-susfs) was written for v2.3.x — API mismatch is possible" ;;
+          esac
+        elif [ "${KSUMODE:-lkm}" != "lkm" ]; then
           case "$susfs_version" in
             "v1.5.8")
             if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
