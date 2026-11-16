@@ -178,7 +178,7 @@ on:
 
 jobs:
   set-op-model:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
       matrix_A14: ${{ steps.set-matrix.outputs.matrix_A14 }}
@@ -673,7 +673,7 @@ jobs:
 
   prepare_ccache:
     name: Prepare ccache binary (download once)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Download custom ccache once
         run: |
@@ -713,7 +713,7 @@ jobs:
       (needs.mirror_toolchain.result == 'success' || needs.mirror_toolchain.result == 'skipped') &&
       inputs.workflow_mode == 'Build & Release' &&
       fromJSON(needs.set-op-model.outputs.matrix_A16).include[0] != null
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       LDCACHE_DIR: ${{ github.workspace }}/.ld_cache
@@ -766,7 +766,7 @@ jobs:
       (needs.mirror_toolchain.result == 'success' || needs.mirror_toolchain.result == 'skipped') &&
       inputs.workflow_mode == 'Build & Release' &&
       fromJSON(needs.set-op-model.outputs.matrix_A15).include[0] != null
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       LDCACHE_DIR: ${{ github.workspace }}/.ld_cache
@@ -819,7 +819,7 @@ jobs:
       (needs.mirror_toolchain.result == 'success' || needs.mirror_toolchain.result == 'skipped') &&
       inputs.workflow_mode == 'Build & Release' &&
       fromJSON(needs.set-op-model.outputs.matrix_A14).include[0] != null
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       LDCACHE_DIR: ${{ github.workspace }}/.ld_cache
@@ -865,7 +865,7 @@ jobs:
 
   trigger-release:
     needs: [set-op-model, build-A16, build-A15, build-A14]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: ${{ always() && inputs.make_release && !cancelled() && (inputs.workflow_mode == 'Release Only' || !failure()) }}
     environment: ${{ (github.ref_name == 'main' || github.ref_name == 'Beta-2' || github.ref_name == 'testing') && 'Production-Release' || '' }}
     env:
