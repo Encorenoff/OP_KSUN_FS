@@ -455,9 +455,12 @@ jobs:
             if [ "$head_ver" != "unknown" ] && [ "$(printf '%s\n%s\n' "$head_ver" "$SUSFS_MAX_SUPPORTED" | sort -V | tail -n1)" != "$SUSFS_MAX_SUPPORTED" ]; then
               echo "::warning::$key: latest SUSFS ($head_ver) is newer than supported ($SUSFS_MAX_SUPPORTED). Looking for the newest supported release tag..."
               picked=""
-              # Tags via git (same method the build action used before), newest first
-              mapfile -t cand_tags < <(git ls-remote --tags "$SUSFS_REPO" 2>/dev/null \
-                | awk '{print $2}' | sed 's#^refs/tags/##; s#\^{}$##' \
+              # Candidate tags: git ls-remote + REST API (both best-effort) + the newest supported
+              # version itself, so the known-good tag is always probed even if listing fails.
+              tag_list_raw=$(git ls-remote --tags "$SUSFS_REPO" 2>&1 || true)
+              [ -n "$tag_list_raw" ] || echo "::warning::git ls-remote returned nothing"
+              rest_tags=$(curl -s -m 30 "https://gitlab.com/api/v4/projects/${GITLAB_PROJECT_ID}/repository/tags?per_page=100" | jq -r '.[]?.name' 2>/dev/null || true)
+              mapfile -t cand_tags < <( { echo "$tag_list_raw" | awk '{print $2}' | sed 's#^refs/tags/##; s#\^{}$##'; echo "$rest_tags"; echo "$SUSFS_MAX_SUPPORTED"; } \
                 | grep -E '^v[0-9]+[.][0-9]+[.][0-9]+$' | sort -V -r | uniq)
               echo "  ℹ️  Tags found: ${cand_tags[*]:-none}"
               for tag_name in "${cand_tags[@]}"; do
