@@ -377,6 +377,12 @@ jobs:
           # SUSFS hash fetch
           SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
           GITLAB_PROJECT_PATH="simonpunk/susfs4ksu"
+          GITLAB_PROJECT_ID="simonpunk%2Fsusfs4ksu"
+          
+          # Newest SUSFS version the build-kernel action can patch (see "Apply SUSFS patches").
+          # If the latest gki-* branch is newer, the newest release tag <= this value is used.
+          # Bump this value after adding support for a newer SUSFS version to the action.
+          SUSFS_MAX_SUPPORTED="v2.3.0"
           
           declare -A default_branches=(
             ["android12-5.10"]="gki-android12-5.10"
@@ -401,15 +407,8 @@ jobs:
             default_val="${default_branches[$key]}"
             user_val="$default_val"   # always the latest commit of the official gki-* branch
             
-            # Build GraphQL query — include blob fetch only when releasing
-            HASH_QUERY="{ project(fullPath: \"${GITLAB_PROJECT_PATH}\") { repository { ch: commit(ref: \"${user_val}\") { sha } } } }"
-            RELEASE_QUERY="{ project(fullPath: \"${GITLAB_PROJECT_PATH}\") { repository { ch: commit(ref: \"${user_val}\") { sha } blobs(paths: [\"kernel_patches/include/linux/susfs.h\"], ref: \"${user_val}\") { nodes { rawBlob } } } } }"
-            
-            if [ "${{ inputs.make_release }}" = "true" ]; then
-              GL_QUERY="$RELEASE_QUERY"
-            else
-              GL_QUERY="$HASH_QUERY"
-            fi
+            # GraphQL query: commit sha + susfs.h (version is needed for the compatibility check)
+            GL_QUERY="{ project(fullPath: \"${GITLAB_PROJECT_PATH}\") { repository { ch: commit(ref: \"${user_val}\") { sha } blobs(paths: [\"kernel_patches/include/linux/susfs.h\"], ref: \"${user_val}\") { nodes { rawBlob } } } } }"
             
             MAX_RETRIES=3
             RETRY_COUNT=0
@@ -425,11 +424,9 @@ jobs:
                 if [ -n "$resolved" ] && [ "$resolved" != "null" ]; then
                   echo "  ✅ Query for $key Success"
                   
-                  if [ "${{ inputs.make_release }}" = "true" ]; then
-                    extracted=$(echo "$RESPONSE" | jq -r '.data.project.repository.blobs.nodes[0].rawBlob // empty' | grep '#define SUSFS_VERSION' | awk -F'"' '{print $2}')
-                    susfs_versions_per_key[$key]="${extracted:-unknown}"
-                    echo "  ✅ $key → SUSFS_VERSION = ${extracted:-unknown}"
-                  fi
+                  extracted=$(echo "$RESPONSE" | jq -r '.data.project.repository.blobs.nodes[0].rawBlob // empty' | grep '#define SUSFS_VERSION' | awk -F'"' '{print $2}' || true)
+                  susfs_versions_per_key[$key]="${extracted:-unknown}"
+                  echo "  ✅ $key → $user_val HEAD SUSFS_VERSION = ${extracted:-unknown}"
                   
                   break
                 fi
@@ -452,8 +449,35 @@ jobs:
               exit 1
             fi
             
+            # Compatibility check: if the branch HEAD is newer than what the action supports,
+            # fall back to the newest release tag that is supported and ships a patch for this kernel.
+            head_ver="${susfs_versions_per_key[$key]:-unknown}"
+            if [ "$head_ver" != "unknown" ] && [ "$(printf '%s\n%s\n' "$head_ver" "$SUSFS_MAX_SUPPORTED" | sort -V | tail -n1)" != "$SUSFS_MAX_SUPPORTED" ]; then
+              echo "::warning::$key: latest SUSFS ($head_ver) is newer than supported ($SUSFS_MAX_SUPPORTED). Looking for the newest supported release tag..."
+              tags_json=$(curl -s --fail "https://gitlab.com/api/v4/projects/${GITLAB_PROJECT_ID}/repository/tags?per_page=100" || true)
+              picked=""
+              while read -r tag_name tag_sha; do
+                [ -n "$tag_name" ] || continue
+                # keep only tags <= SUSFS_MAX_SUPPORTED
+                [ "$(printf '%s\n%s\n' "$tag_name" "$SUSFS_MAX_SUPPORTED" | sort -V | tail -n1)" = "$SUSFS_MAX_SUPPORTED" ] || continue
+                # the tag must contain the patch for this kernel
+                if curl -s --fail -o /dev/null "https://gitlab.com/api/v4/projects/${GITLAB_PROJECT_ID}/repository/files/kernel_patches%2F50_add_susfs_in_gki-${key}.patch?ref=${tag_sha}"; then
+                  picked="$tag_name $tag_sha"
+                  break
+                fi
+              done < <(echo "$tags_json" | jq -r '.[]? | select(.name | test("^v[0-9]+[.][0-9]+[.][0-9]+$")) | "\(.name) \(.commit.id)"' | sort -V -r)
+              
+              if [ -n "$picked" ]; then
+                resolved="${picked#* }"
+                susfs_versions_per_key[$key]="${picked%% *}"
+                echo "  ↩️  $key → using release tag ${picked%% *} ($resolved)"
+              else
+                echo "::warning::No compatible release tag found for $key. Using branch HEAD ($head_ver) — the build may fail on patch step."
+              fi
+            fi
+            
             susfs_hashes["$key"]="$resolved"
-            echo "  ✅ Resolved: $key → $resolved"
+            echo "  ✅ Resolved: $key → $resolved (SUSFS ${susfs_versions_per_key[$key]:-unknown})"
           done
           
           # Write CSV list of active GKI versions
@@ -605,7 +629,7 @@ jobs:
           
           for key in "${active_keys_display[@]}"; do
             fetched_hash="${step_hashes[$key]:-unknown}"
-            echo "- $key: 🔄 latest \`gki-$key\` (\`$fetched_hash\`)" >> $GITHUB_STEP_SUMMARY
+            echo "- $key: 🔄 auto: latest supported (\`$fetched_hash\`)" >> $GITHUB_STEP_SUMMARY
           done
           
           echo "" >> $GITHUB_STEP_SUMMARY
